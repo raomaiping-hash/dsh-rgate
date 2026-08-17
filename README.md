@@ -24,10 +24,10 @@ The Harness's built-in browser-trust fence (`trustedHosts`) is a DNS-rebinding d
 From GitHub (plain ESM, **no build step and no install scripts** — nothing runs at install time):
 
 ```sh
-dsh plugin --profile web add github:YOU/dsh-rgate#<commit-sha>
+dsh plugin --profile web add github:raomaiping-hash/dsh-rgate
 ```
 
-Pin the commit sha: later pushes cannot silently change what runs on your machine.
+Pin a commit sha for reproducibility: later pushes cannot silently change what runs on your machine (`dsh plugin --profile web add github:raomaiping-hash/dsh-rgate#<commit-sha>`).
 
 From npm or a tarball:
 

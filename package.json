@@ -16,6 +16,10 @@
     "cordis.patch.yml"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/raomaiping-hash/dsh-rgate.git"
+  },
   "keywords": [
     "deepseek-harness",
     "dsh",

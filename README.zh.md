@@ -24,10 +24,10 @@ Harness 自带的浏览器信任围栏（`trustedHosts`）是防 DNS 重绑定�
 从 GitHub 安装（纯 ESM，**无构建步骤、无安装脚本**——安装时不会执行任何代码）：
 
 ```sh
-dsh plugin --profile web add github:YOU/dsh-rgate#<commit-sha>
+dsh plugin --profile web add github:raomaiping-hash/dsh-rgate
 ```
 
-建议锁定 commit sha：后续推送无法悄悄改变你机器上运行的内容。
+如需可复现安装，可锁定 commit sha：`dsh plugin --profile web add github:raomaiping-hash/dsh-rgate#<commit-sha>`——后续推送无法悄悄改变你机器上运行的内容。
 
 从 npm 或 tarball 安装：
 
