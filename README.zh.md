@@ -1,5 +1,9 @@
 # dsh-rgate
 
+[![CI](https://github.com/raomaiping-hash/dsh-rgate/actions/workflows/ci.yml/badge.svg)](https://github.com/raomaiping-hash/dsh-rgate/actions/workflows/ci.yml)
+[![version](https://img.shields.io/github/v/tag/raomaiping-hash/dsh-rgate)](https://github.com/raomaiping-hash/dsh-rgate/tags)
+[![license](https://img.shields.io/github/license/raomaiping-hash/dsh-rgate)](LICENSE)
+
 [English](README.md) | 中文
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web UI 的远程访问登录门禁。给整个浏览器界面加上密码墙：公网（非回环）匿名访问只能看到登录页，登录前所有 `/api` RPC 一律拒绝。

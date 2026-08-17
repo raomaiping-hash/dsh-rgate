@@ -1,5 +1,9 @@
 # dsh-rgate
 
+[![CI](https://github.com/raomaiping-hash/dsh-rgate/actions/workflows/ci.yml/badge.svg)](https://github.com/raomaiping-hash/dsh-rgate/actions/workflows/ci.yml)
+[![version](https://img.shields.io/github/v/tag/raomaiping-hash/dsh-rgate)](https://github.com/raomaiping-hash/dsh-rgate/tags)
+[![license](https://img.shields.io/github/license/raomaiping-hash/dsh-rgate)](LICENSE)
+
 [中文](README.zh.md) | English
 
 A remote access login gate for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web UI. Put a password wall in front of the whole browser surface: anonymous visitors on a public (non-loopback) address see only a login page, and every `/api` RPC is refused until they authenticate.
