@@ -53,7 +53,7 @@ There is no config file for the gate itself. Two behaviors are worth knowing:
 - **Loopback is always trusted.** `127.0.0.1` / `localhost` / `::1` never see the wall — that is the admin path.
 - **All other Hosts require login** (LAN, Tailscale, public domain alike). If you want a friction-free host, protect it upstream instead (see below).
 
-The password file `~/.dsh/remote-auth.json`:
+The password file lives at `$DSH_HOME/remote-auth.json` (default `~/.dsh/remote-auth.json` — the harness convention, beside `settings.yaml`):
 
 | field | meaning |
 | --- | --- |

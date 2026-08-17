@@ -53,7 +53,7 @@ journalctl -u deepseek-harness | grep rgate
 - **回环永远可信。**`127.0.0.1` / `localhost` / `::1` 不设墙——这是管理员通道。
 - **其他所有 Host 一律要求登录**（局域网、Tailscale、公网域名一视同仁）。想要免登录入口，请在上游保护它（见下）。
 
-密码文件 `~/.dsh/remote-auth.json`：
+密码文件位于 `$DSH_HOME/remote-auth.json`（默认 `~/.dsh/remote-auth.json`——遵循 harness 约定，与 `settings.yaml` 同层）：
 
 | 字段 | 含义 |
 | --- | --- |

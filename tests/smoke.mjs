@@ -7,12 +7,13 @@ import { scryptSync, timingSafeEqual } from "node:crypto";
 
 const FAKE_HOME = mkdtempSync(join(tmpdir(), "dsh-rgate-test-"));
 process.env.HOME = FAKE_HOME;
+process.env.DSH_HOME = FAKE_HOME; // the plugin resolves DSH_HOME for its data file
 
-const AUTH_FILE = join(FAKE_HOME, ".dsh", "remote-auth.json");
+const AUTH_FILE = join(FAKE_HOME, "remote-auth.json");
 const TEST_PASSWORD = "smoke-test-password-123";
 
 // Seed a legacy v1 plaintext file so the migration path is exercised.
-mkdirSync(join(FAKE_HOME, ".dsh"), { recursive: true });
+mkdirSync(FAKE_HOME, { recursive: true });
 writeFileSync(AUTH_FILE, JSON.stringify({
   version: 1,
   password: TEST_PASSWORD,

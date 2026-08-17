@@ -209,7 +209,12 @@ export function apply(ctx) {
     return;
   }
 
-  const AUTH_FILE = join(homedir(), ".dsh", "remote-auth.json");
+  // 遵循 harness 约定：密码文件在 DSH 数据根下（默认 ~/.dsh），
+  // 与 settings.yaml / .agent-presets 同层。
+  const DSH_HOME = typeof process !== "undefined" && typeof process.env === "object" && process.env.DSH_HOME !== undefined
+    ? process.env.DSH_HOME
+    : join(homedir(), ".dsh");
+  const AUTH_FILE = join(DSH_HOME, "remote-auth.json");
 
   const SCRYPT = { N: 16384, r: 8, p: 1 };
 
@@ -269,7 +274,7 @@ export function apply(ctx) {
 
   const persist = async (content) => {
     const text = JSON.stringify(content, null, 2) + "\n";
-    await mkdir(join(homedir(), ".dsh"), { recursive: true });
+    await mkdir(DSH_HOME, { recursive: true });
     await writeFile(AUTH_FILE, text, { mode: 0o600 });
     try {
       await chmod(AUTH_FILE, 0o600);
