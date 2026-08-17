@@ -1,0 +1,6 @@
+# dsh-rgate bundle patch: register the plugin row.
+# Users may override the row's config in their own profile
+# cordis.patch.yml (later layers win per row).
+- insert:
+    - id: rgate
+      name: dsh-rgate
