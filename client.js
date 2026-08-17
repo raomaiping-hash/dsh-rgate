@@ -1,6 +1,7 @@
 /**
  * dsh-rgate — 客户端半部
- * 设置页新增 "Remote Access" 分区：状态、登录、登出、改密、密码存储信息。
+ * 设置页 "Remote Access" 分区：状态、登录、登出、改密。
+ * 样式注入方式与官方设置分区一致（document.head + data-plugin-css）。
  */
 window.__ModuleLoader__.load({
   id: "dsh-rgate",
@@ -10,77 +11,86 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 
     var React = require("react");
-
     var inject = ["slots"];
 
+    // ── CSS：对齐官方 settings-models / settings-plugins 的视觉语言 ──
+    var CSS_ID = "dsh-rgate/RemoteAccess.css";
     var CSS = [
-      ".rgate-card {",
-      "  font-family: inherit; line-height: 1.55; color: var(--dsw-alias-label-primary, #1d2126);",
-      "  background: var(--dsw-alias-bg-layer-1, #ffffff);",
-      "  border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08));",
-      "  border-radius: 12px; padding: 18px 18px 20px; max-width: 560px;",
-      "  display: flex; flex-direction: column; gap: 14px;",
+      ".rg_section{max-width:560px;color:var(--dsw-alias-label-primary,#1d2126);flex-direction:column;gap:14px;display:flex}",
+      ".rg_status{align-items:flex-start;gap:10px;display:flex}",
+      ".rg_dot{width:8px;height:8px;border-radius:50%;flex:none;margin-top:7px}",
+      ".rg_dotOk{background:var(--dsw-alias-state-success-primary,#2e7d32)}",
+      ".rg_dotWarn{background:var(--dsw-alias-state-warn-primary,#b26a00)}",
+      ".rg_dotErr{background:var(--dsw-alias-state-error-primary,#c62828)}",
+      ".rg_statusTitle{margin:0;font-size:14px;font-weight:500;line-height:22px;color:var(--dsw-alias-label-primary,#1d2126)}",
+      ".rg_statusSub{margin:2px 0 0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#81858c)}",
+      ".rg_info{",
+      "  margin:0;padding:10px 12px;border-radius:8px;font-size:12px;line-height:18px;",
+      "  color:var(--dsw-alias-label-secondary,#61666b);",
+      "  background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2,#f6f7f8));",
+      "  border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));",
       "}",
-      ".rgate-head { display: flex; align-items: flex-start; gap: 10px; }",
-      ".rgate-dot {",
-      "  width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; flex: none;",
+      ".rg_alert{margin:0;padding:8px 12px;border-radius:8px;font-size:12px;line-height:18px;border:1px solid}",
+      ".rg_alertOk{color:var(--dsw-alias-state-success-primary,#2e7d32);border-color:var(--dsw-alias-state-success-primary,#2e7d32);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#2e7d32) 8%,transparent)}",
+      ".rg_alertErr{color:var(--dsw-alias-state-error-primary,#c62828);border-color:var(--dsw-alias-state-error-primary,#c62828);background:color-mix(in srgb,var(--dsw-alias-state-error-primary,#c62828) 8%,transparent)}",
+      ".rg_block{",
+      "  border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));",
+      "  background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2,#f6f7f8));",
+      "  border-radius:12px;padding:14px 16px;flex-direction:column;gap:12px;display:flex;",
       "}",
-      ".rgate-dot-ok { background: var(--dsw-alias-state-success-primary, #2e7d32); }",
-      ".rgate-dot-warn { background: var(--dsw-alias-state-warn-primary, #b26a00); }",
-      ".rgate-dot-err { background: var(--dsw-alias-state-error-primary, #c62828); }",
-      ".rgate-title { font-size: 14px; font-weight: 600; }",
-      ".rgate-sub { font-size: 12px; color: var(--dsw-alias-label-secondary, #61666b); margin-top: 1px; }",
-      ".rgate-block { display: flex; flex-direction: column; gap: 10px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08)); }",
-      ".rgate-block-title { font-size: 12px; font-weight: 600; letter-spacing: .04em; color: var(--dsw-alias-label-secondary, #61666b); }",
-      ".rgate-field { display: flex; flex-direction: column; gap: 5px; }",
-      ".rgate-label { font-size: 12px; color: var(--dsw-alias-label-secondary, #61666b); }",
-      ".rgate-input-wrap { position: relative; }",
-      ".rgate-input {",
-      "  width: 100%; box-sizing: border-box; padding: 9px 11px; font-size: 13px;",
-      "  color: var(--dsw-alias-label-primary, #1d2126);",
-      "  background: var(--dsw-alias-bg-layer-2, #f6f7f8);",
-      "  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18)); border-radius: 8px; outline: none;",
-      "  transition: border-color .15s ease;",
+      ".rg_blockTitle{margin:0;font-size:12px;font-weight:500;line-height:18px;color:var(--dsw-alias-label-secondary,#61666b);letter-spacing:.02em}",
+      ".rg_field{flex-direction:column;gap:6px;display:flex;min-width:0}",
+      ".rg_label{font-size:12px;font-weight:500;line-height:18px;color:var(--dsw-alias-label-secondary,#61666b)}",
+      ".rg_inputWrap{position:relative;display:flex;align-items:center}",
+      ".rg_input{",
+      "  box-sizing:border-box;width:100%;height:36px;font:inherit;font-size:14px;line-height:22px;",
+      "  color:var(--dsw-alias-label-primary,#1d2126);",
+      "  background:var(--dsw-alias-bg-layer-1,#fff);",
+      "  border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.18));",
+      "  border-radius:8px;padding:0 44px 0 12px;outline:none;",
       "}",
-      ".rgate-input:focus { border-color: var(--dsw-alias-brand-primary, #2563eb); }",
-      ".rgate-input[data-eye='1'] { padding-right: 44px; }",
-      ".rgate-eye {",
-      "  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);",
-      "  border: none; background: transparent; padding: 4px 8px; font-size: 12px;",
-      "  color: var(--dsw-alias-label-secondary, #61666b); cursor: pointer; border-radius: 6px;",
+      ".rg_input::placeholder{color:var(--dsw-alias-label-dimmed,#a2a6ad)}",
+      ".rg_input:focus{border-color:var(--dsw-alias-brand-primary,#2563eb)}",
+      ".rg_eye{",
+      "  position:absolute;right:4px;top:50%;transform:translateY(-50%);",
+      "  height:28px;padding:0 10px;border:none;border-radius:6px;cursor:pointer;font:inherit;font-size:12px;line-height:18px;",
+      "  color:var(--dsw-alias-label-tertiary,#81858c);background:transparent;",
       "}",
-      ".rgate-eye:hover { background: var(--dsw-alias-border-l1, rgba(0,0,0,.06)); }",
-      ".rgate-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }",
-      "@media (max-width: 480px) { .rgate-grid2 { grid-template-columns: 1fr; } }",
-      ".rgate-btn {",
-      "  border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600;",
-      "  cursor: pointer; transition: opacity .15s ease; align-self: flex-start;",
+      ".rg_eye:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.04));color:var(--dsw-alias-label-secondary,#61666b)}",
+      ".rg_grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}",
+      "@media (max-width:520px){.rg_grid2{grid-template-columns:1fr}}",
+      ".rg_actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:2px}",
+      ".rg_btn{",
+      "  box-sizing:border-box;height:36px;padding:0 16px;font:inherit;font-size:14px;line-height:22px;",
+      "  border-radius:18px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;",
+      "  border:none;transition:background .12s ease,opacity .12s ease;",
       "}",
-      ".rgate-btn:disabled { opacity: .45; cursor: default; }",
-      ".rgate-btn:not(:disabled):hover { opacity: .86; }",
-      ".rgate-btn-primary { color: #fff; background: var(--dsw-alias-brand-primary, #2563eb); }",
-      ".rgate-btn-ghost {",
-      "  color: var(--dsw-alias-label-primary, #1d2126); background: transparent;",
-      "  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));",
+      ".rg_btn:disabled{opacity:.4;cursor:default}",
+      ".rg_btn:focus-visible{outline:none;box-shadow:0 0 0 2px var(--dsw-alias-border-l3,rgba(0,0,0,.2))}",
+      ".rg_btnPrimary{",
+      "  background:var(--dsw-alias-button-primary-fill,var(--dsw-alias-brand-primary,#2563eb));",
+      "  color:var(--dsw-alias-label-primary-foreground,#fff);",
       "}",
-      ".rgate-alert {",
-      "  font-size: 12px; padding: 8px 11px; border-radius: 8px;",
-      "  border: 1px solid; line-height: 1.5;",
+      ".rg_btnPrimary:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover,var(--dsw-alias-brand-primary,#1d4ed8))}",
+      ".rg_btnGhost{",
+      "  background:transparent;",
+      "  color:var(--dsw-alias-label-primary,#1d2126);",
+      "  border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.18));",
       "}",
-      ".rgate-alert-ok { color: var(--dsw-alias-state-success-primary, #2e7d32); border-color: var(--dsw-alias-state-success-primary, #2e7d32); }",
-      ".rgate-alert-warn { color: var(--dsw-alias-state-warn-primary, #b26a00); border-color: var(--dsw-alias-state-warn-primary, #b26a00); }",
-      ".rgate-alert-err { color: var(--dsw-alias-state-error-primary, #c62828); border-color: var(--dsw-alias-state-error-primary, #c62828); }",
-      ".rgate-info {",
-      "  font-size: 12px; color: var(--dsw-alias-label-secondary, #61666b);",
-      "  padding: 9px 11px 9px 13px; border-left: 3px solid var(--dsw-alias-brand-primary, #2563eb);",
-      "  background: var(--dsw-alias-bg-layer-2, #f6f7f8); border-radius: 0 8px 8px 0; line-height: 1.6;",
-      "}",
-      ".rgate-hint { font-size: 12px; color: var(--dsw-alias-label-secondary, #61666b); }",
-      ".rgate-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }",
-    ].join("\n");
+      ".rg_btnGhost:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.04))}",
+      ".rg_loading{margin:0;font-size:13px;color:var(--dsw-alias-label-tertiary,#81858c)}",
+    ].join("");
+
+    if (typeof document !== "undefined" && document.querySelector('style[data-plugin-css="' + CSS_ID + '"]') === null) {
+      var tag = document.createElement("style");
+      tag.dataset.plugin = "dsh-rgate";
+      tag.dataset.pluginCss = CSS_ID;
+      tag.textContent = CSS;
+      document.head.appendChild(tag);
+    }
 
     function fetchJson(url, init) {
-      if (typeof fetch !== "function") return Promise.resolve({ status: 0, data: null, error: "fetch unavailable" });
+      if (typeof fetch !== "function") return Promise.resolve({ status: 0, data: null });
       return fetch(url, init)
         .then(function (res) {
           return res.text().then(function (text) {
@@ -89,8 +99,8 @@ window.__ModuleLoader__.load({
             return { status: res.status, data: data };
           });
         })
-        .catch(function (e) {
-          return { status: 0, data: null, error: String((e && e.message) || e) };
+        .catch(function () {
+          return { status: 0, data: null };
         });
     }
 
@@ -98,23 +108,22 @@ window.__ModuleLoader__.load({
       var visibleState = React.useState(false);
       var visible = visibleState[0];
       var setVisible = visibleState[1];
-      return React.createElement("div", { className: "rgate-field" },
-        props.label !== undefined
-          ? React.createElement("label", { className: "rgate-label" }, props.label)
-          : null,
-        React.createElement("div", { className: "rgate-input-wrap" },
+      return React.createElement("div", { className: "rg_field" },
+        React.createElement("label", { className: "rg_label" }, props.label),
+        React.createElement("div", { className: "rg_inputWrap" },
           React.createElement("input", {
-            className: "rgate-input",
+            className: "rg_input",
             type: visible ? "text" : "password",
             placeholder: props.placeholder,
             value: props.value,
             autoComplete: props.autoComplete || "off",
-            "data-eye": "1",
             onChange: function (e) { props.onChange(e.target.value); },
+            onKeyDown: props.onKeyDown,
           }),
           React.createElement("button", {
             type: "button",
-            className: "rgate-eye",
+            className: "rg_eye",
+            tabIndex: -1,
             onClick: function () { setVisible(!visible); },
           }, visible ? "隐藏" : "显示"),
         ),
@@ -157,9 +166,7 @@ window.__ModuleLoader__.load({
         });
       }, []);
 
-      React.useEffect(function () {
-        refresh();
-      }, [refresh]);
+      React.useEffect(function () { refresh(); }, [refresh]);
 
       var doLogin = function () {
         if (loginPw === "") return;
@@ -173,7 +180,7 @@ window.__ModuleLoader__.load({
           setBusy(false);
           if (r.status === 200 && r.data !== null && r.data.ok === true) {
             setLoginPw("");
-            setMessage({ tone: "ok", text: "已登录。本浏览器已解锁全部功能（会话、设置、凭据、模型发现）。" });
+            setMessage({ tone: "ok", text: "已登录。本浏览器已解锁全部功能。" });
             refresh();
           } else if (r.status === 429) {
             setMessage({ tone: "err", text: "尝试次数过多，请 " + String((r.data && r.data.retryInSeconds) || 30) + " 秒后重试。" });
@@ -213,7 +220,7 @@ window.__ModuleLoader__.load({
             setCurrent("");
             setNext("");
             setConfirm("");
-            setMessage({ tone: "ok", text: "密码已更新，全部远程会话已失效，请用新密码重新登录。" });
+            setMessage({ tone: "ok", text: "密码已更新。全部远程会话已失效，请用新密码重新登录。" });
             refresh();
           } else {
             setMessage({ tone: "err", text: String((r.data && r.data.error) || "修改失败。") });
@@ -221,111 +228,130 @@ window.__ModuleLoader__.load({
         });
       };
 
-      if (status === null) return React.createElement("div", { className: "rgate-info" }, "加载中…");
+      if (status === null) {
+        return React.createElement("div", { className: "rg_section" },
+          React.createElement("p", { className: "rg_loading" }, "加载中…"),
+        );
+      }
 
-      var headTone = "err";
+      var headTone = "Err";
       var headTitle = "未登录 — 功能被锁定";
       var headSub = "登录后本浏览器将解锁全部功能；密码由本机管理员设置。";
       if (status.loopback) {
-        headTone = "ok";
+        headTone = "Ok";
         headTitle = "本机访问（loopback）";
         headSub = "本机免登录直通，可在此查看存储状态与修改密码。";
       } else if (status.authenticated) {
-        headTone = "ok";
+        headTone = "Ok";
         headTitle = "已登录 — 全部功能已解锁";
         headSub = "会话有效期 7 天；登出或改密后需重新登录。";
       }
 
-      return React.createElement("div", { className: "rgate-card" },
-        React.createElement("div", { className: "rgate-head" },
-          React.createElement("span", { className: "rgate-dot rgate-dot-" + headTone }),
+      var children = [
+        React.createElement("div", { key: "status", className: "rg_status" },
+          React.createElement("span", { className: "rg_dot rg_dot" + headTone }),
           React.createElement("div", null,
-            React.createElement("div", { className: "rgate-title" }, headTitle),
-            React.createElement("div", { className: "rgate-sub" }, headSub),
+            React.createElement("p", { className: "rg_statusTitle" }, headTitle),
+            React.createElement("p", { className: "rg_statusSub" }, headSub),
           ),
         ),
+      ];
 
-        message !== null
-          ? React.createElement("div", { className: "rgate-alert rgate-alert-" + message.tone }, message.text)
-          : null,
+      if (message !== null) {
+        children.push(React.createElement("p", {
+          key: "msg",
+          className: "rg_alert rg_alert" + (message.tone === "ok" ? "Ok" : "Err"),
+        }, message.text));
+      }
 
-        secret !== null && secret.path !== undefined
-          ? React.createElement("div", { className: "rgate-info" },
-              "密码以 scrypt 哈希存储于 " + String(secret.path) + "，出于安全不显示明文。忘记密码：删除该文件并重启 deepseek-harness 服务，新密码会打印在服务日志中（journalctl -u deepseek-harness | grep rgate）。")
-          : null,
+      if (secret !== null && secret.path !== undefined) {
+        children.push(React.createElement("p", { key: "info", className: "rg_info" },
+          "密码以 scrypt 哈希存储于 ",
+          React.createElement("code", null, String(secret.path)),
+          "，不显示明文。忘记密码：删除该文件并重启服务，新密码会打印在服务日志中。",
+        ));
+      }
 
-        !status.loopback && !status.authenticated
-          ? React.createElement("div", { className: "rgate-block" },
-              React.createElement("div", { className: "rgate-block-title" }, "登录"),
-              React.createElement(PasswordField, {
-                label: "访问密码",
-                placeholder: "输入访问密码",
-                value: loginPw,
-                autoComplete: "current-password",
-                onChange: setLoginPw,
-              }),
-              React.createElement("button", {
-                className: "rgate-btn rgate-btn-primary",
-                disabled: busy || loginPw === "",
-                onClick: doLogin,
-              }, busy ? "登录中…" : "登 录"),
-            )
-          : null,
+      if (!status.loopback && !status.authenticated) {
+        children.push(React.createElement("div", { key: "login", className: "rg_block" },
+          React.createElement("p", { className: "rg_blockTitle" }, "登录"),
+          React.createElement(PasswordField, {
+            label: "访问密码",
+            placeholder: "输入访问密码",
+            value: loginPw,
+            autoComplete: "current-password",
+            onChange: setLoginPw,
+            onKeyDown: function (e) {
+              if (e.key === "Enter") doLogin();
+            },
+          }),
+          React.createElement("div", { className: "rg_actions" },
+            React.createElement("button", {
+              type: "button",
+              className: "rg_btn rg_btnPrimary",
+              disabled: busy || loginPw === "",
+              onClick: doLogin,
+            }, busy ? "登录中…" : "登 录"),
+          ),
+        ));
+      }
 
-        status.loopback || status.authenticated
-          ? React.createElement("div", { className: "rgate-block" },
-              React.createElement("div", { className: "rgate-block-title" }, "修改密码"),
-              status.loopback
-                ? React.createElement(PasswordField, {
-                    label: "当前密码",
-                    placeholder: "输入当前密码",
-                    value: current,
-                    autoComplete: "current-password",
-                    onChange: setCurrent,
-                  })
-                : null,
-              React.createElement("div", { className: "rgate-grid2" },
-                React.createElement(PasswordField, {
-                  label: "新密码",
-                  placeholder: "至少 8 个字符",
-                  value: next,
-                  autoComplete: "new-password",
-                  onChange: setNext,
-                }),
-                React.createElement(PasswordField, {
-                  label: "确认新密码",
-                  placeholder: "再次输入新密码",
-                  value: confirm,
-                  autoComplete: "new-password",
-                  onChange: setConfirm,
-                }),
-              ),
-              React.createElement("div", { className: "rgate-actions" },
-                React.createElement("button", {
-                  className: "rgate-btn rgate-btn-primary",
-                  disabled: busy,
-                  onClick: doChange,
-                }, busy ? "保存中…" : "保存修改"),
-                !status.loopback && status.authenticated
-                  ? React.createElement("button", {
-                      className: "rgate-btn rgate-btn-ghost",
-                      disabled: busy,
-                      onClick: doLogout,
-                    }, "登 出")
-                  : null,
-              ),
-            )
-          : null,
-      );
+      if (status.loopback || status.authenticated) {
+        var changeKids = [
+          React.createElement("p", { key: "t", className: "rg_blockTitle" }, "修改密码"),
+        ];
+        if (status.loopback) {
+          changeKids.push(React.createElement(PasswordField, {
+            key: "cur",
+            label: "当前密码",
+            placeholder: "输入当前密码",
+            value: current,
+            autoComplete: "current-password",
+            onChange: setCurrent,
+          }));
+        }
+        changeKids.push(React.createElement("div", { key: "grid", className: "rg_grid2" },
+          React.createElement(PasswordField, {
+            label: "新密码",
+            placeholder: "至少 8 个字符",
+            value: next,
+            autoComplete: "new-password",
+            onChange: setNext,
+          }),
+          React.createElement(PasswordField, {
+            label: "确认新密码",
+            placeholder: "再次输入新密码",
+            value: confirm,
+            autoComplete: "new-password",
+            onChange: setConfirm,
+          }),
+        ));
+        var actions = [
+          React.createElement("button", {
+            key: "save",
+            type: "button",
+            className: "rg_btn rg_btnPrimary",
+            disabled: busy,
+            onClick: doChange,
+          }, busy ? "保存中…" : "保存修改"),
+        ];
+        if (!status.loopback && status.authenticated) {
+          actions.push(React.createElement("button", {
+            key: "out",
+            type: "button",
+            className: "rg_btn rg_btnGhost",
+            disabled: busy,
+            onClick: doLogout,
+          }, "登 出"));
+        }
+        changeKids.push(React.createElement("div", { key: "act", className: "rg_actions" }, actions));
+        children.push(React.createElement("div", { key: "change", className: "rg_block" }, changeKids));
+      }
+
+      return React.createElement("div", { className: "rg_section" }, children);
     }
 
     function apply(ctx) {
-      var styles = ctx.get("styles");
-      if (styles !== undefined && typeof styles.insert === "function") {
-        ctx.effect(function () {
-          return styles.insert(CSS);
-        }, "rgate: styles");
-      }
       ctx.slots.inject("settings.section", function () {
         return ctx.slots.register(
           { name: "settings.section", id: "remote-access", order: 40, label: function () { return "Remote Access"; } },
