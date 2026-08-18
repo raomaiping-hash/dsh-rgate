@@ -154,6 +154,11 @@ const LOGIN_PAGE = `<!DOCTYPE html>
   var pw = document.getElementById("pw");
   var go = document.getElementById("go");
   var err = document.getElementById("err");
+  // Only accept a same-site relative route to prevent open redirects.
+  function nextPage() {
+    var value = new URLSearchParams(location.search).get("next") || "/";
+    return value.charAt(0) === "/" && value.charAt(1) !== "/" ? value : "/";
+  }
   function fail(text) { err.textContent = text || ""; }
   function submit() {
     var value = pw.value;
@@ -165,7 +170,7 @@ const LOGIN_PAGE = `<!DOCTYPE html>
       body: JSON.stringify({ password: value }),
     }).then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
       .then(function (r) {
-        if (r.status === 200 && r.data && r.data.ok === true) { location.replace("/"); return; }
+        if (r.status === 200 && r.data && r.data.ok === true) { location.replace(nextPage()); return; }
         go.disabled = false;
         if (r.status === 429) fail("尝试次数过多，请 " + String((r.data && r.data.retryInSeconds) || 30) + " 秒后重试");
         else fail("密码错误");
@@ -177,7 +182,7 @@ const LOGIN_PAGE = `<!DOCTYPE html>
   // 已登录则直接进入
   fetch("/api/remote-auth.status", { cache: "no-store" })
     .then(function (r) { return r.json(); })
-    .then(function (s) { if (s.authenticated === true || s.loopback === true) location.replace("/"); })
+    .then(function (s) { if (s.authenticated === true || s.loopback === true) location.replace(nextPage()); })
     .catch(function () {});
 })();
 </script>
@@ -187,6 +192,25 @@ const LOGIN_PAGE = `<!DOCTYPE html>
 const GATE_HEAD = `<style id="rgate-gate-style">#root{visibility:hidden!important}</style>
 <script>
 (function () {
+  var redirecting = false;
+  function loginPage() {
+    if (redirecting || location.pathname === "/rgate-login") return;
+    redirecting = true;
+    var next = location.pathname + location.search + location.hash;
+    location.replace("/rgate-login?next=" + encodeURIComponent(next));
+  }
+  // Session records are intentionally in-memory. When a restart or TTL expiry
+  // makes a protected RPC return our marker, go straight back to the login wall
+  // instead of leaving the app on a bare 401 error.
+  var nativeFetch = window.fetch;
+  if (typeof nativeFetch === "function") {
+    window.fetch = function () {
+      return nativeFetch.apply(this, arguments).then(function (response) {
+        if (response.status === 401 && response.headers.get("x-rgate-auth") === "required") loginPage();
+        return response;
+      });
+    };
+  }
   function show() {
     var el = document.getElementById("rgate-gate-style");
     if (el) el.remove();
@@ -195,7 +219,7 @@ const GATE_HEAD = `<style id="rgate-gate-style">#root{visibility:hidden!importan
     .then(function (r) { return r.json(); })
     .then(function (s) {
       if (s.authenticated === true || s.loopback === true) show();
-      else location.replace("/rgate-login");
+      else loginPage();
     })
     .catch(function () { show(); });
 })();
@@ -414,10 +438,13 @@ export function apply(ctx) {
     res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
     res.end(text);
   };
-  const sendPlain = (res, status, text) => {
-    res.writeHead(status, { "content-type": "text/plain", "cache-control": "no-store" });
+  const sendPlain = (res, status, text, headers) => {
+    res.writeHead(status, Object.assign({ "content-type": "text/plain", "cache-control": "no-store" }, headers || {}));
     res.end(String(text));
   };
+  // A stable marker lets the injected browser gate distinguish an expired
+  // rgate session from an unrelated 401 returned by application code.
+  const sendUnauthorized = (res) => sendPlain(res, 401, "unauthorized", { "x-rgate-auth": "required" });
   const readBody = (req) => new Promise((resolve, reject) => {
     let size = 0;
     let text = "";
@@ -451,7 +478,7 @@ export function apply(ctx) {
   const makeGate = (method, domain, fn) => async (req, res) => {
     await ensureLoaded();
     if (!allowed(req)) {
-      sendPlain(res, 401, "unauthorized");
+      sendUnauthorized(res);
       return;
     }
     if (req.method !== "POST") {
@@ -495,7 +522,7 @@ export function apply(ctx) {
   const makeRespond = () => async (req, res) => {
     await ensureLoaded();
     if (!allowed(req)) {
-      sendPlain(res, 401, "unauthorized");
+      sendUnauthorized(res);
       return;
     }
     if (req.method !== "POST") {
@@ -523,7 +550,7 @@ export function apply(ctx) {
   const makeExport = () => async (req, res) => {
     await ensureLoaded();
     if (!allowed(req)) {
-      sendPlain(res, 401, "unauthorized");
+      sendUnauthorized(res);
       return;
     }
     if (req.method !== "GET" && req.method !== "HEAD") {

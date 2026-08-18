@@ -108,7 +108,7 @@ r = await call("/api/session.list", { body: JSON.stringify({ type: "client-reque
 check("loopback unary passthrough", r.status === 200 && JSON.parse(r.body).result.ok === true, r.body);
 
 r = await call("/api/session.list", { host: "public.example.com", body: JSON.stringify({ type: "client-request", rpcId: "a2", method: "session.list", payload: {} }), headers: { "content-type": "application/json" } });
-check("remote unauthenticated -> 401", r.status === 401, "status=" + r.status);
+check("remote unauthenticated -> marked 401", r.status === 401 && r.headers["x-rgate-auth"] === "required", "status=" + r.status + ", marker=" + r.headers["x-rgate-auth"]);
 
 r = await call("/api/remote-auth.status", { method: "GET", host: "public.example.com" });
 const st = JSON.parse(r.body);
@@ -168,7 +168,7 @@ r = await call("/rgate-login", { method: "GET", host: "public.example.com" });
 check("login page served", r.status === 200 && r.body.includes("/api/remote-auth.login") && r.body.includes("scrypt"), "");
 
 const injected = indexTaps[0]("<html><head><meta charset='utf-8'></head><body></body></html>");
-check("gate script injected into head", injected.includes("rgate-gate-style") && injected.includes("/rgate-login") && injected.includes("/api/remote-auth.status"));
+check("gate script injects expiry redirect", injected.includes("rgate-gate-style") && injected.includes("x-rgate-auth") && injected.includes("/rgate-login?next=") && injected.includes("redirecting"));
 
 console.log(failures === 0 ? "\nALL PASS" : "\n" + failures + " FAILURES");
 process.exit(failures === 0 ? 0 : 1);
