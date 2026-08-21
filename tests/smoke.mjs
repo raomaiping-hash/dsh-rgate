@@ -168,7 +168,7 @@ r = await call("/rgate-login", { method: "GET", host: "public.example.com" });
 check("login page served", r.status === 200 && r.body.includes("/api/remote-auth.login") && r.body.includes("scrypt"), "");
 
 const injected = indexTaps[0]("<html><head><meta charset='utf-8'></head><body></body></html>");
-check("gate script injects expiry redirect", injected.includes("rgate-gate-style") && injected.includes("x-rgate-auth") && injected.includes("/rgate-login?next=") && injected.includes("redirecting"));
+check("gate script injects expiry redirect", injected.includes("rgate-gate-style") && injected.includes("x-rgate-auth") && injected.includes("/rgate-login?next=") && injected.includes("rgate_boot_retry"));
 
 console.log(failures === 0 ? "\nALL PASS" : "\n" + failures + " FAILURES");
 process.exit(failures === 0 ? 0 : 1);

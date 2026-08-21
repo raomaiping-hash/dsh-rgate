@@ -214,6 +214,21 @@ const GATE_HEAD = `<style id="rgate-gate-style">#root{visibility:hidden!importan
   function show() {
     var el = document.getElementById("rgate-gate-style");
     if (el) el.remove();
+    // 启动看门狗：index.html 被浏览器缓存后，Harness 升级换代会让旧哈希资源
+    // 404（SPA 兜底返回 text/html → 模块加载失败 → 白屏）。检测 root 迟迟没有
+    // 挂载内容，就带穿透参数重载一次；sessionStorage 防循环。
+    setTimeout(function () {
+      try {
+        var root = document.getElementById("root");
+        if (!root) return;
+        if (root.childElementCount > 0) { sessionStorage.removeItem("rgate_boot_retry"); return; }
+        if (!sessionStorage.getItem("rgate_boot_retry")) {
+          sessionStorage.setItem("rgate_boot_retry", "1");
+          var sep = location.search ? "&" : "?";
+          location.replace(location.pathname + location.search + sep + "rgate_r=" + Date.now() + location.hash);
+        }
+      } catch (e) {}
+    }, 3000);
   }
   fetch("/api/remote-auth.status", { cache: "no-store" })
     .then(function (r) { return r.json(); })
