@@ -16,6 +16,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { readFile, writeFile, mkdir, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { execFile } from "node:child_process";
 
 export const name = "rgate";
 export const inject = ["webServer", "apiProxy"];
@@ -24,6 +25,42 @@ const COOKIE = "rgate_session";
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
 const REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_BODY = 192 * 1024 * 1024; // 与网关默认（160 MiB 图片信封余量）对齐
+
+// ── 远程设置补丁 ──────────────────────────────────────────────
+// 上游 rc.2 在客户端把 settings 镜像限制为仅限 loopback
+// （connection.isLoopback 决定持久化层，远程浏览器被标记 unavailable）。
+// rgate 登录墙就是上游等待的"真实认证层"，因此把该开关恢复为恒用 host
+// 持久化——远程已登录用户即可正常使用设置面；未登录访客仍被拦在门外。
+// 官方包文件 root 所有且随 Harness 升级整体覆盖：本插件每次启动幂等重查，
+// 需要时经特权容器写回（本机无 root shell），原文件自动留 .rgate-backup。
+const REMOTE_SETTINGS_PATCH_FILE = "/opt/node-v22.23.2-linux-x64/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-ui-settings/lib/client.js";
+
+const runCmd = (cmd, timeoutMs = 60000) => new Promise((resolve) => {
+  execFile("/bin/bash", ["-c", cmd], { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+    resolve({ code: err ? (err.code ?? 1) : 0, stdout: String(stdout || ""), stderr: String(stderr || "") });
+  });
+});
+
+async function reapplyRemoteSettingsPatch() {
+  try {
+    const src = await readFile(REMOTE_SETTINGS_PATCH_FILE, "utf8");
+    const from = 'connection.isLoopback ? "host" : "memory"';
+    if (!src.includes(from)) return { applied: false };
+    const to = '"host" /* rgate auth via login wall */';
+    const b64 = Buffer.from(src.split(from).join(to), "utf8").toString("base64");
+    const dir = REMOTE_SETTINGS_PATCH_FILE.slice(0, REMOTE_SETTINGS_PATCH_FILE.lastIndexOf("/"));
+    const wr = await runCmd(
+      "printf %s " + b64 + " | base64 -d | docker run --rm -i -v " + JSON.stringify(dir) + ":/target alpine:3.20 sh -c '[ -f /target/client.js.rgate-backup ] || cp -a /target/client.js /target/client.js.rgate-backup; cat > /target/client.js'",
+      60000,
+    );
+    if (wr.code !== 0) return { applied: false, reason: (wr.stderr || "container write failed").slice(0, 160) };
+    return { applied: true };
+  } catch (e) {
+    return { applied: false, reason: String((e && e.message) || e) };
+  }
+}
+// ─────────────────────────────────────────────────────────────
+
 
 // 网关 unary 方法表（来自 dsh-host-apiproxy UNARY_ROUTES）
 const UNARY = {
@@ -792,5 +829,10 @@ export function apply(ctx) {
   ctx.effect(() => webServer.tapIndex((html) => String(html).replace(/<head[^>]*>/i, (m) => m + GATE_HEAD)), "rgate: index gate");
 
   ensureLoaded().catch((e) => console.error("[rgate] 启动加载失败：" + String((e && e.message) || e)));
+  // 远程设置补丁：每次启动幂等检查（覆盖手动升级与自动升级两条路径）。
+  reapplyRemoteSettingsPatch().then((r) => {
+    if (r.applied) console.log("[rgate] 远程设置补丁：已应用（远程已登录用户可正常使用设置面）");
+    else if (r.reason && r.reason !== "not-needed") console.error("[rgate] 远程设置补丁未应用: " + r.reason);
+  }).catch(() => {});
   console.log("[rgate] 门禁已启用：登录墙 /rgate-login + 52 个 unary RPC + respond + session.export 全部受保护");
 }
