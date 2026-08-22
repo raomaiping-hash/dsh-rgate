@@ -94,3 +94,13 @@ node tests/smoke.mjs
 ## License
 
 MIT
+
+## Settings plane note (rc.2+)
+
+Harness rc.2 serves the settings plane (model providers, credentials, preset
+authoring) to loopback pages only, pending a real authentication layer. Since
+rgate is that layer, at every start it reapplies a one-line client patch that
+lets **logged-in** remote browsers use settings normally; anonymous visitors
+remain blocked by the wall. The original file is backed up next to the target
+(`client.js.rgate-backup`) and the patch reapplies automatically after each
+Harness upgrade.

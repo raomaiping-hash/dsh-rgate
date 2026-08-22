@@ -17,6 +17,7 @@ import { readFile, writeFile, mkdir, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
 
 export const name = "rgate";
 export const inject = ["webServer", "apiProxy"];
@@ -32,8 +33,18 @@ const MAX_BODY = 192 * 1024 * 1024; // 与网关默认（160 MiB 图片信封余
 // rgate 登录墙就是上游等待的"真实认证层"，因此把该开关恢复为恒用 host
 // 持久化——远程已登录用户即可正常使用设置面；未登录访客仍被拦在门外。
 // 官方包文件 root 所有且随 Harness 升级整体覆盖：本插件每次启动幂等重查，
-// 需要时经特权容器写回（本机无 root shell），原文件自动留 .rgate-backup。
-const REMOTE_SETTINGS_PATCH_FILE = "/opt/node-v22.23.2-linux-x64/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-ui-settings/lib/client.js";
+// 需要时经特权容器写回（部署环境通常无 root shell），原文件自动留 .rgate-backup。
+// 目标文件按安装布局动态解析（@deepseek-ai/* 由运行时闭包注入）；解析失败时
+// 回退到 npm 全局安装的默认布局，再失败则补丁静默跳过（不影响门禁本体）。
+const REMOTE_SETTINGS_PATCH_FILE = (function resolveRemoteSettingsPatchFile() {
+  try {
+    const req = createRequire(import.meta.url);
+    const pkg = req.resolve("@deepseek-ai/dsh-client-ui-settings/package.json");
+    return join(pkg.slice(0, pkg.lastIndexOf("/")), "lib", "client.js");
+  } catch (e) {
+    return "/opt/node-v22.23.2-linux-x64/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-ui-settings/lib/client.js";
+  }
+})();
 
 const runCmd = (cmd, timeoutMs = 60000) => new Promise((resolve) => {
   execFile("/bin/bash", ["-c", cmd], { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {

@@ -1,6 +1,6 @@
 {
   "name": "dsh-rgate",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Remote access login gate for the DeepSeek Harness Web UI: a password wall in front of non-loopback access, full /api RPC gating, session cookies, and a Remote Access settings section.",
   "type": "module",
   "main": "index.js",
