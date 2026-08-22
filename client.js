@@ -1,6 +1,6 @@
 /**
  * dsh-rgate — 客户端半部
- * 设置页 "Remote Access" 分区：状态、登录、登出、改密。
+ * 设置页 "远程访问" 分区：状态、登录、登出、改密。
  * 样式注入方式与官方设置分区一致（document.head + data-plugin-css）。
  */
 window.__ModuleLoader__.load({
@@ -354,7 +354,7 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       ctx.slots.inject("settings.section", function () {
         return ctx.slots.register(
-          { name: "settings.section", id: "remote-access", order: 40, label: function () { return "Remote Access"; } },
+          { name: "settings.section", id: "remote-access", order: 40, label: function () { return "远程访问"; } },
           function () {
             return React.createElement(SectionView);
           },
