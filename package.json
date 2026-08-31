@@ -1,7 +1,7 @@
 {
   "name": "dsh-rgate",
-  "version": "0.1.8",
-  "description": "Remote access login gate for the DeepSeek Harness Web UI: a password wall in front of non-loopback access, full /api RPC gating, session cookies, and a Remote Access settings section.",
+  "version": "0.2.0",
+  "description": "Remote access login gate for the DeepSeek Harness Web UI: a password wall in front of non-loopback access, session cookies, an injected browser-side gate, and a Remote Access settings section. The /api RPC surface is authenticated by dsh itself.",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -34,10 +34,7 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-ui-slots"
-      ],
+      "inject": [],
       "platform": "web"
     }
   },

@@ -3,7 +3,7 @@
  *
  * 常驻 Web 插件：对非回环（非 127.0.0.1/localhost/::1）的 Web 访问实施登录墙。
  * - 未登录：任何页面通过 index.html 注入脚本重定向到 /rgate-login 登录页；
- *   全部 /api unary RPC、/api/respond、/api/session.export 返回 401。
+ *   /api 的 RPC 面由新版 dsh 自身鉴权（无凭据一律 401），本插件不再代理。
  * - 登录成功：HttpOnly + SameSite=Strict cookie（7 天内存会话），放行。
  * - 回环（本机）：始终直通，不要求登录。
  * - 密码存储：~/.dsh/remote-auth.json（0600，明文，与动态版兼容）。
@@ -13,29 +13,30 @@
  * 入口，建议在 Cloudflare 控制台为该域名开启 Access（Zero Trust）。
  */
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { readFile, writeFile, mkdir, chmod } from "node:fs/promises";
-import { homedir } from "node:os";
+import { readFile, writeFile, mkdir, chmod, rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 
 export const name = "rgate";
-export const inject = ["webServer", "apiProxy"];
+export const inject = ["webServer"];
 
 const COOKIE = "rgate_session";
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
-const REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_BODY = 192 * 1024 * 1024; // 与网关默认（160 MiB 图片信封余量）对齐
 
 // ── 远程设置补丁 ──────────────────────────────────────────────
-// 上游 rc.2 在客户端把 settings 镜像限制为仅限 loopback
-// （connection.isLoopback 决定持久化层，远程浏览器被标记 unavailable）。
+// 官方客户端把 settings 镜像限制为仅限 loopback（非回环页面的持久化层被降级
+// 为 "memory"，describe 面标记 unavailable，浏览器里报
+// "settings are unavailable in this browser" / 加载提供方目录失败）。
 // rgate 登录墙就是上游等待的"真实认证层"，因此把该开关恢复为恒用 host
 // 持久化——远程已登录用户即可正常使用设置面；未登录访客仍被拦在门外。
 // 官方包文件 root 所有且随 Harness 升级整体覆盖：本插件每次启动幂等重查，
-// 需要时经特权容器写回（部署环境通常无 root shell），原文件自动留 .rgate-backup。
+// 需要时经 sudo 或特权容器写回，原文件自动留 .rgate-backup。
+// 锚点表达式随官方版本变化，按新→旧顺序尝试；全不匹配时明确报告而非静默跳过。
 // 目标文件按安装布局动态解析（@deepseek-ai/* 由运行时闭包注入）；解析失败时
-// 回退到 npm 全局安装的默认布局，再失败则补丁静默跳过（不影响门禁本体）。
+// 回退到 npm 全局安装的默认布局，再失败则报告原因（不影响门禁本体）。
 const REMOTE_SETTINGS_PATCH_FILE = (function resolveRemoteSettingsPatchFile() {
   try {
     const req = createRequire(import.meta.url);
@@ -52,106 +53,63 @@ const runCmd = (cmd, timeoutMs = 60000) => new Promise((resolve) => {
   });
 });
 
+// 官方决定 settings 持久化层的锚点表达式（新版在前）。
+const REMOTE_SETTINGS_ANCHORS = [
+  'ctx.remote.$host.isLoopback ? "host" : "memory"', // 0.1.2-alpha.2 及以后
+  'connection.isLoopback ? "host" : "memory"',       // 0.1.2-alpha.1 及以前
+];
+const REMOTE_SETTINGS_MARK = '"host" /* rgate auth via login wall */';
+
 async function reapplyRemoteSettingsPatch() {
   try {
     const src = await readFile(REMOTE_SETTINGS_PATCH_FILE, "utf8");
-    const from = 'connection.isLoopback ? "host" : "memory"';
-    if (!src.includes(from)) return { applied: false };
-    const to = '"host" /* rgate auth via login wall */';
-    const b64 = Buffer.from(src.split(from).join(to), "utf8").toString("base64");
+    if (src.includes(REMOTE_SETTINGS_MARK)) return { applied: false, reason: "not-needed" };
+    const from = REMOTE_SETTINGS_ANCHORS.find((a) => src.includes(a));
+    if (from === undefined) {
+      return {
+        applied: false,
+        reason: "锚点未匹配（官方 settings client 可能已改版）：" + REMOTE_SETTINGS_PATCH_FILE,
+      };
+    }
+    const patched = src.split(from).join(REMOTE_SETTINGS_MARK);
     const dir = REMOTE_SETTINGS_PATCH_FILE.slice(0, REMOTE_SETTINGS_PATCH_FILE.lastIndexOf("/"));
-    const wr = await runCmd(
-      "printf %s " + b64 + " | base64 -d | docker run --rm -i -v " + JSON.stringify(dir) + ":/target alpine:3.20 sh -c '[ -f /target/client.js.rgate-backup ] || cp -a /target/client.js /target/client.js.rgate-backup; cat > /target/client.js'",
-      60000,
-    );
-    if (wr.code !== 0) return { applied: false, reason: (wr.stderr || "container write failed").slice(0, 160) };
-    return { applied: true };
+    const base = REMOTE_SETTINGS_PATCH_FILE.slice(REMOTE_SETTINGS_PATCH_FILE.lastIndexOf("/") + 1);
+    const backup = REMOTE_SETTINGS_PATCH_FILE + ".rgate-backup";
+    const tmp = join(tmpdir(), "rgate-settings-patch-" + process.pid + "-" + Date.now() + ".js");
+    await writeFile(tmp, patched, "utf8");
+    const q = (s) => "'" + String(s).split("'").join("'\\''") + "'";
+    try {
+      // 1) sudo（免密时最轻）
+      let wr = await runCmd(
+        "sudo -n sh -c " + q(
+          "[ -f " + q(backup) + " ] || cp -a " + q(REMOTE_SETTINGS_PATCH_FILE) + " " + q(backup) + "; " +
+          "cp " + q(tmp) + " " + q(REMOTE_SETTINGS_PATCH_FILE),
+        ),
+        60000,
+      );
+      // 2) 特权容器回退（无 root shell 的部署环境）
+      if (wr.code !== 0) {
+        const inner = "[ -f /target/" + base + ".rgate-backup ] || cp -a /target/" + base +
+          " /target/" + base + ".rgate-backup; cat > /target/" + base;
+        wr = await runCmd(
+          "cat " + q(tmp) + " | docker run --rm -i -v " + q(dir + ":/target") +
+            " alpine:3.20 sh -c " + q(inner),
+          60000,
+        );
+      }
+      if (wr.code !== 0) {
+        return { applied: false, reason: (wr.stderr || "sudo 与容器写入均失败").slice(0, 220) };
+      }
+      return { applied: true, anchor: from };
+    } finally {
+      await rm(tmp, { force: true }).catch(() => {});
+    }
   } catch (e) {
     return { applied: false, reason: String((e && e.message) || e) };
   }
 }
 // ─────────────────────────────────────────────────────────────
 
-
-// 网关 unary 方法表（来自 dsh-host-apiproxy UNARY_ROUTES）
-const UNARY = {
-  "agentPreset.copy": ["agentPresets", "copy"],
-  "agentPreset.list": ["agentPresets", "list"],
-  "agentPreset.openDocument": ["agentPresets", "openDocument"],
-  "agentPreset.read": ["agentPresets", "read"],
-  "agentPreset.remove": ["agentPresets", "remove"],
-  "agentPreset.select": ["agentPresets", "select"],
-  "credentials.describe": ["credentials", "describe"],
-  "credentials.set": ["credentials", "set"],
-  "credentials.unset": ["credentials", "unset"],
-  "goal.clear": ["goals", "clear"],
-  "goal.complete": ["goals", "complete"],
-  "goal.create": ["goals", "create"],
-  "goal.edit": ["goals", "edit"],
-  "goal.pause": ["goals", "pause"],
-  "goal.resume": ["goals", "resume"],
-  "host.createDirectory": ["host", "createDirectory"],
-  "host.describe": ["host", "describe"],
-  "host.listDirectory": ["host", "listDirectory"],
-  "host.openPath": ["host", "openPath"],
-  "host.pickDirectory": ["host", "pickDirectory"],
-  "llm.discoverModels": ["llm", "discoverModels"],
-  "llm.models": ["llm", "models"],
-  "llm.providers": ["llm", "providers"],
-  "session.attachment": ["sessions", "attachment"],
-  "session.cancel": ["sessions", "cancel"],
-  "session.create": ["sessions", "create"],
-  "session.fork": ["sessions", "fork"],
-  "session.history": ["sessions", "history"],
-  "session.list": ["sessions", "list"],
-  "session.models": ["sessions", "models"],
-  "session.prompt": ["sessions", "prompt"],
-  "session.rename": ["sessions", "rename"],
-  "session.search": ["sessions", "search"],
-  "session.selectModel": ["sessions", "selectModel"],
-  "session.updateQueue": ["sessions", "updateQueue"],
-  "settings.describe": ["settings", "describe"],
-  "settings.mutate": ["settings", "mutate"],
-  "settings.openDocument": ["settings", "openDocument"],
-  "settings.replace": ["settings", "replace"],
-  "settings.update": ["settings", "update"],
-  "skill.list": ["skills", "list"],
-  "subagent.history": ["subagents", "history"],
-  "subagent.interrupt": ["subagents", "interrupt"],
-  "subagent.list": ["subagents", "list"],
-  "subagent.prompt": ["subagents", "prompt"],
-  "workspace.archiveSession": ["workspace", "archiveSession"],
-  "workspace.create": ["workspace", "create"],
-  "workspace.delete": ["workspace", "delete"],
-  "workspace.insertBefore": ["workspace", "insertBefore"],
-  "workspace.insertSessionBefore": ["workspace", "insertSessionBefore"],
-  "workspace.list": ["workspace", "list"],
-  "workspace.rename": ["workspace", "rename"],
-};
-
-// 敏感配置面：结构性校验（与网关 zod 边界对齐）
-const STRICT = {
-  "settings.describe": (p) => p !== null && typeof p === "object" && !Array.isArray(p),
-  "settings.update": (p) => p !== null && typeof p === "object" && typeof p.ns === "string" && p.ns.length > 0 &&
-    p.patch !== null && typeof p.patch === "object" && !Array.isArray(p.patch) &&
-    (p.expectedRevision === undefined || Number.isInteger(p.expectedRevision)),
-  "settings.replace": (p) => p !== null && typeof p === "object" && typeof p.ns === "string" && p.ns.length > 0 &&
-    p.section !== null && typeof p.section === "object" && !Array.isArray(p.section) &&
-    (p.expectedRevision === undefined || Number.isInteger(p.expectedRevision)),
-  "settings.mutate": (p) => p !== null && typeof p === "object" && typeof p.ns === "string" && p.ns.length > 0 &&
-    Array.isArray(p.ops) && p.ops.every((op) => op !== null && typeof op === "object" &&
-      (op.op === "set" || op.op === "unset") && Array.isArray(op.path)) &&
-    (p.expectedRevision === undefined || Number.isInteger(p.expectedRevision)),
-  "credentials.describe": (p) => p !== null && typeof p === "object" && Array.isArray(p.refs) && p.refs.length <= 64 &&
-    p.refs.every((r) => typeof r === "string" && REF_PATTERN.test(r)),
-  "credentials.set": (p) => p !== null && typeof p === "object" && typeof p.ref === "string" && REF_PATTERN.test(p.ref) &&
-    typeof p.value === "string" && p.value.length >= 1,
-  "credentials.unset": (p) => p !== null && typeof p === "object" && typeof p.ref === "string" && REF_PATTERN.test(p.ref),
-  "agentPreset.read": (p) => p !== null && typeof p === "object" && typeof p.agentPreset === "string" && p.agentPreset.length > 0,
-  "agentPreset.copy": (p) => p !== null && typeof p === "object" && typeof p.from === "string" && p.from.length > 0 &&
-    typeof p.agentPreset === "string" && p.agentPreset.length > 0 && (p.name === undefined || typeof p.name === "string"),
-  "llm.discoverModels": (p) => p !== null && typeof p === "object" && typeof p.settingsNs === "string" && p.settingsNs.length > 0,
-};
 
 const LOGIN_PAGE = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -248,13 +206,31 @@ const GATE_HEAD = `<style id="rgate-gate-style">#root{visibility:hidden!importan
     location.replace("/rgate-login?next=" + encodeURIComponent(next));
   }
   // Session records are intentionally in-memory. When a restart or TTL expiry
-  // makes a protected RPC return our marker, go straight back to the login wall
+  // makes a protected RPC return 401, go straight back to the login wall
   // instead of leaving the app on a bare 401 error.
+  // 两条路径：rgate 自己的端点带 x-rgate-auth 标记；新版 dsh 自身鉴权的 /api
+  // 面返回不带标记的裸 401 —— 那时主动问一次 remote-auth.status 才能区分
+  // 「rgate 会话失效」和「dsh 自己的授权问题」，只有前者跳登录墙。
   var nativeFetch = window.fetch;
+  var probing = false;
+  function probeSession() {
+    if (probing || redirecting) return;
+    probing = true;
+    nativeFetch("/api/remote-auth.status", { headers: { accept: "application/json" }, cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (s) {
+        if (s && s.configured === true && s.authenticated === false && s.loopback === false) loginPage();
+      })
+      .catch(function () {})
+      .then(function () { probing = false; });
+  }
   if (typeof nativeFetch === "function") {
     window.fetch = function () {
       return nativeFetch.apply(this, arguments).then(function (response) {
-        if (response.status === 401 && response.headers.get("x-rgate-auth") === "required") loginPage();
+        if (response.status === 401) {
+          if (response.headers.get("x-rgate-auth") === "required") loginPage();
+          else probeSession();
+        }
         return response;
       });
     };
@@ -290,9 +266,8 @@ const GATE_HEAD = `<style id="rgate-gate-style">#root{visibility:hidden!importan
 
 export function apply(ctx) {
   const webServer = ctx.webServer;
-  const apiProxy = ctx.apiProxy;
-  if (webServer === undefined || apiProxy === undefined) {
-    console.error("[rgate] webServer 或 apiProxy 不可用，门禁未启用");
+  if (webServer === undefined) {
+    console.error("[rgate] webServer 不可用，门禁未启用");
     return;
   }
 
@@ -524,135 +499,6 @@ export function apply(ctx) {
     req.on("error", reject);
   });
 
-  const abortSignal = (req) => {
-    const controller = new AbortController();
-    const onClose = () => controller.abort();
-    req.on("close", onClose);
-    const done = () => req.off("close", onClose);
-    return { signal: controller.signal, done };
-  };
-
-  const badEnvelope = (res, rpcId, message) => sendJson(res, 200, {
-    type: "server-response",
-    rpcId,
-    result: { ok: false, error: { code: "bad-request", message, details: { issues: [] } } },
-  });
-
-  const makeGate = (method, domain, fn) => async (req, res) => {
-    await ensureLoaded();
-    if (!allowed(req)) {
-      sendUnauthorized(res);
-      return;
-    }
-    if (req.method !== "POST") {
-      sendPlain(res, 404, "not found");
-      return;
-    }
-    const ct = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
-    if (ct !== "application/json") {
-      sendPlain(res, 415, "content type must be application/json");
-      return;
-    }
-    let bodyText;
-    try {
-      bodyText = await readBody(req);
-    } catch (e) {
-      sendPlain(res, 400, "body is not JSON");
-      return;
-    }
-    let body;
-    try {
-      body = JSON.parse(bodyText);
-    } catch (e) {
-      sendPlain(res, 400, "body is not JSON");
-      return;
-    }
-    const rpcId = body !== null && typeof body === "object" && typeof body.rpcId === "string" ? body.rpcId : "invalid-request";
-    if (body === null || typeof body !== "object" || body.type !== "client-request") return badEnvelope(res, rpcId, "invalid client-request message");
-    if (body.method !== method) return badEnvelope(res, rpcId, `method "${String(body.method)}" does not match path "${method}"`);
-    const validate = STRICT[method] || ((p) => p !== null && typeof p === "object" && !Array.isArray(p));
-    if (!validate(body.payload)) return badEnvelope(res, rpcId, `invalid payload for ${method}`);
-    try {
-      const { signal, done } = abortSignal(req);
-      const narrow = await apiProxy[domain][fn]({ rpcId, payload: body.payload }, signal);
-      done();
-      sendJson(res, 200, { type: "server-response", rpcId: narrow.rpcId, result: narrow.result });
-    } catch (e) {
-      sendPlain(res, 500, "handler failure: " + String((e && e.message) || e));
-    }
-  };
-
-  const makeRespond = () => async (req, res) => {
-    await ensureLoaded();
-    if (!allowed(req)) {
-      sendUnauthorized(res);
-      return;
-    }
-    if (req.method !== "POST") {
-      sendPlain(res, 404, "not found");
-      return;
-    }
-    let body;
-    try {
-      body = JSON.parse(await readBody(req));
-    } catch (e) {
-      sendPlain(res, 400, "body is not JSON");
-      return;
-    }
-    if (body === null || typeof body !== "object" || body.type !== "client-response" || typeof body.rpcId !== "string") {
-      sendJson(res, 200, { accepted: false, reason: "bad-response" });
-      return;
-    }
-    try {
-      sendJson(res, 200, await apiProxy.respond(body));
-    } catch (e) {
-      sendPlain(res, 500, "handler failure: " + String((e && e.message) || e));
-    }
-  };
-
-  const makeExport = () => async (req, res) => {
-    await ensureLoaded();
-    if (!allowed(req)) {
-      sendUnauthorized(res);
-      return;
-    }
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      sendPlain(res, 404, "not found");
-      return;
-    }
-    const url = new URL(req.url, "http://localhost");
-    const sessionId = url.searchParams.get("sessionId");
-    if (sessionId === null || sessionId === "") {
-      sendPlain(res, 400, "missing or invalid sessionId query parameter");
-      return;
-    }
-    try {
-      const { signal, done } = abortSignal(req);
-      const response = await apiProxy.downloads.sessionLog({
-        sessionId,
-        includeDescendants: url.searchParams.get("includeDescendants") === "true",
-      }, signal);
-      done();
-      const headers = {};
-      response.headers.forEach((value, key) => {
-        headers[key] = value;
-      });
-      res.writeHead(response.status, headers);
-      if (req.method === "HEAD") {
-        if (response.body && typeof response.body.cancel === "function") await response.body.cancel().catch(() => {});
-        res.end();
-        return;
-      }
-      if (response.body !== null && response.body !== undefined) {
-        for await (const chunk of response.body) {
-          res.write(Buffer.from(chunk));
-        }
-      }
-      res.end();
-    } catch (e) {
-      if (!res.writableEnded) sendPlain(res, 500, "export failed: " + String((e && e.message) || e));
-    }
-  };
 
   const makeLogin = () => async (req, res) => {
     await ensureLoaded();
@@ -821,29 +667,22 @@ export function apply(ctx) {
     res.end(LOGIN_PAGE);
   };
 
-  // 1) 全部 unary RPC 精确路由（遮蔽 /api 前缀）
-  for (const method of Object.keys(UNARY)) {
-    const [domain, fn] = UNARY[method];
-    ctx.effect(() => webServer.register({ kind: "exact", path: "/api/" + method, handler: makeGate(method, domain, fn) }), "rgate: " + method);
-  }
-  // 2) 应答与导出面
-  ctx.effect(() => webServer.register({ kind: "exact", path: "/api/respond", handler: makeRespond() }), "rgate: respond");
-  ctx.effect(() => webServer.register({ kind: "exact", path: "/api/session.export", handler: makeExport() }), "rgate: session.export");
-  // 3) 自定义端点
+  // 1) 自定义端点（/api 的 RPC 面由新版 dsh 自身鉴权，rgate 不再代理）
   ctx.effect(() => webServer.register({ kind: "exact", path: "/api/remote-auth.login", handler: makeLogin() }), "rgate: login");
   ctx.effect(() => webServer.register({ kind: "exact", path: "/api/remote-auth.logout", handler: makeLogout() }), "rgate: logout");
   ctx.effect(() => webServer.register({ kind: "exact", path: "/api/remote-auth.status", handler: makeStatus() }), "rgate: status");
   ctx.effect(() => webServer.register({ kind: "exact", path: "/api/remote-auth.secret", handler: makeSecret() }), "rgate: secret");
   ctx.effect(() => webServer.register({ kind: "exact", path: "/api/remote-auth.password", handler: makePassword() }), "rgate: password");
   ctx.effect(() => webServer.register({ kind: "exact", path: "/rgate-login", handler: makeLoginPage() }), "rgate: login page");
-  // 4) index.html 注入 UI 门禁脚本
+  // 2) index.html 注入 UI 门禁脚本
   ctx.effect(() => webServer.tapIndex((html) => String(html).replace(/<head[^>]*>/i, (m) => m + GATE_HEAD)), "rgate: index gate");
 
   ensureLoaded().catch((e) => console.error("[rgate] 启动加载失败：" + String((e && e.message) || e)));
   // 远程设置补丁：每次启动幂等检查（覆盖手动升级与自动升级两条路径）。
   reapplyRemoteSettingsPatch().then((r) => {
-    if (r.applied) console.log("[rgate] 远程设置补丁：已应用（远程已登录用户可正常使用设置面）");
-    else if (r.reason && r.reason !== "not-needed") console.error("[rgate] 远程设置补丁未应用: " + r.reason);
-  }).catch(() => {});
-  console.log("[rgate] 门禁已启用：登录墙 /rgate-login + 52 个 unary RPC + respond + session.export 全部受保护");
+    if (r.applied) console.log("[rgate] 远程设置补丁：已应用（远程已登录用户可正常使用设置面）锚点=" + r.anchor);
+    else if (r.reason === "not-needed") console.log("[rgate] 远程设置补丁：已在位，无需重打");
+    else console.error("[rgate] 远程设置补丁未应用: " + r.reason);
+  }).catch((e) => console.error("[rgate] 远程设置补丁异常: " + String((e && e.message) || e)));
+  console.log("[rgate] 门禁已启用：登录墙 /rgate-login + index.html UI 门禁 + remote-auth 端点（/api RPC 面由 dsh 自身鉴权）");
 }

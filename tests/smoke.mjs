@@ -26,26 +26,11 @@ const { apply } = await import("../index.js");
 const routes = new Map();
 const indexTaps = [];
 
-const fakeApiProxy = new Proxy({}, {
-  get(_t, domain) {
-    if (domain === "respond") return async () => ({ accepted: true });
-    if (domain === "downloads") return {
-      sessionLog: async () => new Response("FAKEZIP", { status: 200, headers: { "content-type": "application/zip" } }),
-    };
-    return new Proxy({}, {
-      get(_t2, fn) {
-        return async (request) => ({ rpcId: request.rpcId, result: { ok: true, value: { fake: domain + "." + fn } } });
-      },
-    });
-  },
-});
-
 const ctx = {
   webServer: {
     register(route) { routes.set(route.path, route.handler); return () => routes.delete(route.path); },
     tapIndex(fn) { indexTaps.push(fn); return () => {}; },
   },
-  apiProxy: fakeApiProxy,
   get() { return undefined; },
   effect(fn) { return fn(); },
 };
@@ -102,13 +87,12 @@ apply(ctx);
 
 let r;
 
-check("routes registered (60)", routes.size === 60, "size=" + routes.size);
-
-r = await call("/api/session.list", { body: JSON.stringify({ type: "client-request", rpcId: "a1", method: "session.list", payload: {} }), headers: { "content-type": "application/json" } });
-check("loopback unary passthrough", r.status === 200 && JSON.parse(r.body).result.ok === true, r.body);
-
-r = await call("/api/session.list", { host: "public.example.com", body: JSON.stringify({ type: "client-request", rpcId: "a2", method: "session.list", payload: {} }), headers: { "content-type": "application/json" } });
-check("remote unauthenticated -> marked 401", r.status === 401 && r.headers["x-rgate-auth"] === "required", "status=" + r.status + ", marker=" + r.headers["x-rgate-auth"]);
+// New-architecture contract: rgate no longer proxies the /api RPC surface
+// (the apiProxy service was removed upstream; dsh authenticates /api itself).
+// Only rgate's own endpoints plus the login page are registered.
+check("routes registered (6)", routes.size === 6, "size=" + routes.size);
+check("does not shadow /api RPC surface", !routes.has("/api/session.list") && !routes.has("/api/settings.describe") && !routes.has("/api/respond") && !routes.has("/api/session.export"), [...routes.keys()].join(","));
+check("registers exactly its own endpoints", ["/api/remote-auth.login", "/api/remote-auth.logout", "/api/remote-auth.status", "/api/remote-auth.secret", "/api/remote-auth.password", "/rgate-login"].every((p) => routes.has(p)), [...routes.keys()].join(","));
 
 r = await call("/api/remote-auth.status", { method: "GET", host: "public.example.com" });
 const st = JSON.parse(r.body);
@@ -140,8 +124,9 @@ r = await call("/api/remote-auth.login", { host: "public.example.com", headers: 
 const cookie = (r.headers["set-cookie"] || "").split(";")[0];
 check("login -> 200 + set-cookie", r.status === 200 && cookie.startsWith("rgate_session="), r.headers["set-cookie"]);
 
-r = await call("/api/settings.describe", { host: "public.example.com", cookie, headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "client-request", rpcId: "a3", method: "settings.describe", payload: {} }) });
-check("authenticated settings.describe forwarded", r.status === 200 && JSON.parse(r.body).result.ok === true, r.body);
+r = await call("/api/remote-auth.status", { method: "GET", host: "public.example.com", cookie });
+const stAuthed = JSON.parse(r.body);
+check("authenticated remote status reports session", r.status === 200 && stAuthed.authenticated === true, r.body);
 
 for (let i = 0; i < 5; i += 1) {
   await call("/api/remote-auth.login", { host: "public.example.com", headers: { "cf-connecting-ip": "1.1.1.1", "content-type": "application/json" }, body: JSON.stringify({ password: "bad" }) });
@@ -169,6 +154,9 @@ check("login page served", r.status === 200 && r.body.includes("/api/remote-auth
 
 const injected = indexTaps[0]("<html><head><meta charset='utf-8'></head><body></body></html>");
 check("gate script injects expiry redirect", injected.includes("rgate-gate-style") && injected.includes("x-rgate-auth") && injected.includes("/rgate-login?next=") && injected.includes("rgate_boot_retry"));
+// Bare 401s from dsh's own /api authentication carry no rgate marker, so the
+// gate must fall back to probing remote-auth.status before it redirects.
+check("gate script probes status on unmarked 401", injected.includes("/api/remote-auth.status") && injected.includes("probeSession"), "");
 
 console.log(failures === 0 ? "\nALL PASS" : "\n" + failures + " FAILURES");
 process.exit(failures === 0 ? 0 : 1);
