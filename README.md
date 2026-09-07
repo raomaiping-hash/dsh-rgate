@@ -15,7 +15,7 @@ The Harness's built-in browser-trust fence (`trustedHosts`) is a DNS-rebinding d
 ## What it does
 
 - **Full-page login wall** — a gate script is injected into every `index.html` (via `webServer.tapIndex`); unauthenticated non-loopback visitors are redirected to `/rgate-login`, a self-contained login page.
-- **Complete `/api` gating** — exact routes shadow the shipped `/api` prefix for all 52 unary RPCs plus `/api/respond` and `/api/session.export`. Loopback requests pass through; everything else needs a session cookie or gets `401` before the body is even parsed.
+- **Complete `/api` gating** — modern Harness releases authenticate the `/api` RPC surface themselves (no credentials → `401`), so rgate no longer proxies or shadows those routes. It registers only its own `/api/remote-auth.*` endpoints plus `/rgate-login`; loopback hosts pass straight through, and non-loopback visitors need a session cookie or the injected gate script redirects them to the login wall.
 - **Cookie sessions** — `rgate_session`, HttpOnly + SameSite=Strict, 7-day in-memory sessions; logout and password change invalidate all sessions.
 - **Login throttling** — 5 failed attempts per client → exponential backoff (30s doubling, capped at 16 min). Behind Cloudflare Tunnel the client key is `Cf-Connecting-Ip` (fallback `X-Forwarded-For`, then socket address), so one attacker cannot lock everyone out.
 - **Audit logging** — login success/failure/lockout and password changes go to the harness log (journald) without passwords.
@@ -75,7 +75,7 @@ The password file lives at `$DSH_HOME/remote-auth.json` (default `~/.dsh/remote-
 ## Known limitations
 
 - **WebSocket event streams are not gated.** `/api/events.mux` and `/api/events.host` upgrades are owned by the shipped `dsh-client-connection` plugin; registering the same upgrade path throws, and pre-registering breaks boot. A fence-passing client can still open them and receive live session event frames. The robust fix is **upstream**: enable Cloudflare Access (Zero Trust) on your public domain, or put an authenticating reverse proxy (e.g. nginx `auth_request`) in front. That closes UI, API and WebSockets before traffic reaches the Harness.
-- **RPC surface is pinned to a snapshot.** The gate shadows the unary method table of the Harness version it was tested against; a Harness upgrade that adds RPCs needs those paths added to the `UNARY` table.
+- **The `/api` method table is not owned here.** Harness-native `/api` authentication (no credentials → `401`) covers new RPCs as they are added; rgate never shadows that table.
 - **Sessions are in-memory.** A Harness restart signs everyone out (7-day cookie otherwise).
 - Static assets are still served to unauthenticated visitors (they are public code); all data lives behind the API gate.
 
@@ -95,12 +95,15 @@ node tests/smoke.mjs
 
 MIT
 
-## Settings plane note (rc.2+)
+## Settings plane note
 
-Harness rc.2 serves the settings plane (model providers, credentials, preset
-authoring) to loopback pages only, pending a real authentication layer. Since
-rgate is that layer, at every start it reapplies a one-line client patch that
-lets **logged-in** remote browsers use settings normally; anonymous visitors
-remain blocked by the wall. The original file is backed up next to the target
+Harness 0.1.2-rc.2+ serves the settings plane (model providers, credentials,
+preset authoring) to loopback pages only, pending a real authentication layer.
+Since rgate is that layer, at every start it reapplies a one-line client patch
+that lets **logged-in** remote browsers use settings normally; anonymous
+visitors remain blocked by the wall. The anchor expression
+(`ctx.remote.$host.isLoopback ? "host" : "memory"` in
+`@deepseek-ai/dsh-client-ui-settings/lib/client.js`) was re-verified against
+Harness 0.1.3-alpha.2. The original file is backed up next to the target
 (`client.js.rgate-backup`) and the patch reapplies automatically after each
 Harness upgrade.

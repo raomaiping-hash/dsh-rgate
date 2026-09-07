@@ -15,7 +15,7 @@ Harness 自带的浏览器信任围栏（`trustedHosts`）是防 DNS 重绑定�
 ## 功能
 
 - **全页登录墙**——通过 `webServer.tapIndex` 向每个 `index.html` 注入门禁脚本；未登录的非回环访问被重定向到 `/rgate-login`（自包含登录页）。
-- **全量 `/api` 门禁**——用精确路由遮蔽内置 `/api` 前缀：全部 52 个 unary RPC + `/api/respond` + `/api/session.export`。回环直通；其余请求必须携带会话 cookie，否则在解析 body 之前就 `401`。
+- **全量 `/api` 门禁**——新版 Harness 由官方自身对 `/api` RPC 面鉴权（无凭据一律 `401`），rgate 不再代理或遮蔽这些路由，只注册自己的 `/api/remote-auth.*` 端点与 `/rgate-login`；回环直通，非回环访客必须持有会话 cookie，否则被注入的门禁脚本重定向到登录墙。
 - **Cookie 会话**——`rgate_session`，HttpOnly + SameSite=Strict，7 天内存会话；登出与改密会吊销全部会话。
 - **登录限速**——每客户端 5 次失败后指数退避（30 秒起翻倍，上限 16 分钟）。在 Cloudflare Tunnel 之后，客户端键取 `Cf-Connecting-Ip`（回退 `X-Forwarded-For`、再回退 socket 地址），攻击者无法把所有人一起锁死。
 - **审计日志**——登录成功/失败/锁定、改密事件写入 harness 日志（journald），不含密码。
@@ -75,7 +75,7 @@ journalctl -u deepseek-harness | grep rgate
 ## 已知边界
 
 - **WebSocket 事件流不受门禁。**`/api/events.mux` 与 `/api/events.host` 的升级由内置 `dsh-client-connection` 持有：重复注册同名 upgrade 会抛错、抢先注册会打断启动。通过围栏的客户端仍可连接并收到实时会话事件帧。稳妥的修法在**上游**：给公网域名启用 Cloudflare Access（Zero Trust），或在前面放一个带认证的反向代理（如 nginx `auth_request`）——在流量到达 Harness 之前就把 UI、API、WebSocket 全部封闭。
-- **RPC 面按快照固定。**门禁遮蔽的是测试所用 Harness 版本的 unary 方法表；Harness 升级新增 RPC 时，需要把新路径补进 `UNARY` 表。
+- **`/api` 方法表不归本插件维护。**Harness 原生 `/api` 鉴权（无凭据一律 `401`）会覆盖新增 RPC，rgate 从不遮蔽该方法表。
 - **会话在内存中。**Harness 重启会登出所有人（否则 7 天有效）。
 - 静态资源对未登录访问者仍可见（它们是公开代码）；所有数据都在 API 门禁之后。
 
@@ -95,6 +95,6 @@ node tests/smoke.mjs
 
 MIT
 
-## 设置面说明（rc.2+）
+## 设置面说明
 
-Harness rc.2 将设置面（模型提供方、凭据、预设编写）限制为仅限本机页面，等待真实认证层。rgate 正是这层认证：每次启动会幂等地重打一行客户端补丁，让**已登录**的远程浏览器正常使用设置；未登录访客仍被登录墙拦截。原文件会在目标旁自动备份（`client.js.rgate-backup`），Harness 每次升级后补丁自动重打。
+Harness 0.1.2-rc.2+ 将设置面（模型提供方、凭据、预设编写）限制为仅限本机页面，等待真实认证层。rgate 正是这层认证：每次启动会幂等地重打一行客户端补丁，让**已登录**的远程浏览器正常使用设置；未登录访客仍被登录墙拦截。锚点表达式（`@deepseek-ai/dsh-client-ui-settings/lib/client.js` 中的 `ctx.remote.$host.isLoopback ? "host" : "memory"`）已在 Harness 0.1.3-alpha.2 上重新核实。原文件会在目标旁自动备份（`client.js.rgate-backup`），Harness 每次升级后补丁自动重打。
