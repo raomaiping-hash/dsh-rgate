@@ -17,6 +17,7 @@ Harness 自带的浏览器信任围栏（`trustedHosts`）是防 DNS 重绑定�
 - **全页登录墙**——通过 `webServer.tapIndex` 向每个 `index.html` 注入门禁脚本；未登录的非回环访问被重定向到 `/rgate-login`（自包含登录页）。
 - **全量 `/api` 门禁**——新版 Harness 由官方自身对 `/api` RPC 面鉴权（无凭据一律 `401`），rgate 不再代理或遮蔽这些路由，只注册自己的 `/api/remote-auth.*` 端点与 `/rgate-login`；回环直通，非回环访客必须持有会话 cookie，否则被注入的门禁脚本重定向到登录墙。
 - **Cookie 会话**——`rgate_session`，HttpOnly + SameSite=Strict，7 天内存会话；登出与改密会吊销全部会话。
+- **免 `?token=` 访问**——Harness 本体（`dsh-client-connection`）默认只认进程 token 换来的 cookie：不带 `?token=<launchToken>` 的地址一律 `401`，每次访问都得先找到那行 URL。登录墙通过后，rgate 额外签发一枚同格式的 HMAC 签名 cookie（`rgate_auth`，密钥 `~/.dsh/.rgate-signing.key`），并让本体的 `isAuthenticated` 用同一密钥验证它、让 `authorizeIndex` 放行 index——于是直接访问域名就能落到登录页，登录后 `?token=` 不再需要。`/api` 仍要求签名，匿名请求依旧 `401`。
 - **登录限速**——每客户端 5 次失败后指数退避（30 秒起翻倍，上限 16 分钟）。在 Cloudflare Tunnel 之后，客户端键取 `Cf-Connecting-Ip`（回退 `X-Forwarded-For`、再回退 socket 地址），攻击者无法把所有人一起锁死。
 - **审计日志**——登录成功/失败/锁定、改密事件写入 harness 日志（journald），不含密码。
 - **哈希密码存储**——`~/.dsh/remote-auth.json`（0600）内以 scrypt（N=16384, r=8, p=1）+ 随机盐 + 常数时间比较存储；旧版明文文件自动迁移。忘记密码：删除该文件并重启服务，新密码会在服务日志中打印一次。

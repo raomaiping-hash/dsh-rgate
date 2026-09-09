@@ -12,7 +12,7 @@
  * dsh-client-connection 持有，本插件无法在路由层拦截；如需彻底封闭公网
  * 入口，建议在 Cloudflare 控制台为该域名开启 Access（Zero Trust）。
  */
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { readFile, writeFile, mkdir, chmod, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +23,12 @@ export const name = "rgate";
 export const inject = ["webServer"];
 
 const COOKIE = "rgate_session";
+// DSH 本体（dsh-client-connection）只认自己的进程 token cookie：首次访问必须用
+// 带 ?token=<launchToken> 的地址换 cookie，否则 index 与 /api 一律 401。rgate
+// 就是那层认证，所以这里额外签发一枚同格式的 HMAC 签名 cookie，并让 DSH 的
+// isAuthenticated 用同一密钥验证它——登录墙通过后，token 地址不再需要。
+const DSH_TRUST_COOKIE = "rgate_auth";
+const SIGNING_KEY_NAME = ".rgate-signing.key";
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
 const MAX_BODY = 192 * 1024 * 1024; // 与网关默认（160 MiB 图片信封余量）对齐
 
@@ -104,6 +110,167 @@ async function reapplyRemoteSettingsPatch() {
     } finally {
       await rm(tmp, { force: true }).catch(() => {});
     }
+  } catch (e) {
+    return { applied: false, reason: String((e && e.message) || e) };
+  }
+}
+// ── DSH 本体鉴权打通：登录墙通过后不再需要 ?token= 地址 ──────────
+// dsh-client-connection 的 BrowserAuth 只认进程 token 换来的 cookie：
+//   authorizeIndex() —— 无 token/cookie 的 index 请求一律 401；
+//   requestRejection() —— /api 面同样要求该 cookie。
+// 结果就是每次访问都得先拿到带 ?token=<launchToken> 的地址。rgate 既然是登录墙，
+// 就让它成为那层凭据：登录时另发一枚 HMAC 签名 cookie（rgate_auth），并让 DSH 的
+// isAuthenticated 用同一密钥验证它；index 请求则直接放行，由注入脚本决定去留。
+// 写入路径与设置补丁一致（sudo → 特权容器），原文件留 .rgate-backup。
+const DSH_CONNECTION_FILE = (function resolveDshConnectionFile() {
+  try {
+    const req = createRequire(import.meta.url);
+    const pkg = req.resolve("@deepseek-ai/dsh-client-connection/package.json");
+    return join(pkg.slice(0, pkg.lastIndexOf("/")), "lib", "index.js");
+  } catch (e) {
+    return "/opt/node-v22.23.2-linux-x64/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib/index.js";
+  }
+})();
+
+const DSH_TRUST_MARK = "/* [rgate] trust the login wall */";
+
+const DSH_AUTH_FROM = [
+  "\tisAuthenticated(request) {",
+  "\t\tconst authority = requestAuthority(request.headers);",
+  "\t\tconst rawCookie = header(request.headers, \"cookie\");",
+  "\t\tif (authority === void 0 || rawCookie === void 0) return false;",
+  "\t\tconst value = cookieValue(rawCookie, cookieName(authority));",
+  "\t\tif (value === void 0) return false;",
+  "\t\tconst payload = decodeCookie(value, this.secret);",
+  "\t\tif (payload === void 0 || payload.authority !== authority) return false;",
+  "\t\tconst now = Date.now();",
+  "\t\treturn payload.issuedAt <= now && payload.expiresAt > now && payload.expiresAt > payload.issuedAt && payload.expiresAt - payload.issuedAt <= this.maxAgeMilliseconds;",
+  "\t}",
+].join("\n");
+
+const DSH_AUTH_TO = [
+  "\tisAuthenticated(request) {",
+  "\t\tconst authority = requestAuthority(request.headers);",
+  "\t\tconst rawCookie = header(request.headers, \"cookie\");",
+  "\t\tif (authority === void 0 || rawCookie === void 0) return false;",
+  "\t\tconst value = cookieValue(rawCookie, cookieName(authority));",
+  "\t\tif (value !== void 0) {",
+  "\t\t\tconst payload = decodeCookie(value, this.secret);",
+  "\t\t\tif (payload !== void 0 && payload.authority === authority) {",
+  "\t\t\t\tconst now = Date.now();",
+  "\t\t\t\tif (payload.issuedAt <= now && payload.expiresAt > now && payload.expiresAt > payload.issuedAt && payload.expiresAt - payload.issuedAt <= this.maxAgeMilliseconds) return true;",
+  "\t\t\t}",
+  "\t\t}",
+  "\t\t" + DSH_TRUST_MARK,
+  "\t\ttry {",
+  "\t\t\tconst fsR = process.getBuiltinModule(\"node:fs\");",
+  "\t\t\tconst pathR = process.getBuiltinModule(\"node:path\");",
+  "\t\t\tconst osR = process.getBuiltinModule(\"node:os\");",
+  "\t\t\tconst homeR = process.env.DSH_HOME || pathR.join(osR.homedir(), \".dsh\");",
+  "\t\t\tif (globalThis.__rgateSigningKey === void 0) globalThis.__rgateSigningKey = fsR.readFileSync(pathR.join(homeR, \".rgate-signing.key\"), \"utf8\").trim();",
+  "\t\t\tconst keyR = decodeBase64Url(globalThis.__rgateSigningKey);",
+  "\t\t\tif (keyR !== void 0 && keyR.byteLength === 32) {",
+  "\t\t\t\tconst valueR = cookieValue(rawCookie, \"rgate_auth\");",
+  "\t\t\t\tif (valueR !== void 0) {",
+  "\t\t\t\t\tconst payloadR = decodeCookie(valueR, keyR);",
+  "\t\t\t\t\tif (payloadR !== void 0 && payloadR.authority === authority) {",
+  "\t\t\t\t\t\tconst nowR = Date.now();",
+  "\t\t\t\t\t\tif (payloadR.issuedAt <= nowR && payloadR.expiresAt > nowR) return true;",
+  "\t\t\t\t\t}",
+  "\t\t\t\t}",
+  "\t\t\t}",
+  "\t\t} catch {}",
+  "\t\treturn false;",
+  "\t}",
+].join("\n");
+
+const DSH_INDEX_FROM = [
+  "\t\t\tthis.writeUnauthorized(req, res);",
+  "\t\t\treturn false;",
+  "\t\t}",
+  "\t\tif (this.isAuthenticated(req)) return true;",
+  "\t\tthis.writeUnauthorized(req, res);",
+  "\t\treturn false;",
+  "\t}",
+].join("\n");
+
+const DSH_INDEX_TO = [
+  "\t\t\t" + DSH_TRUST_MARK,
+  "\t\t\treturn true;",
+  "\t\t}",
+  "\t\tif (this.isAuthenticated(req)) return true;",
+  "\t\t" + DSH_TRUST_MARK,
+  "\t\treturn true;",
+  "\t}",
+].join("\n");
+
+/** 签名密钥：~/.dsh/.rgate-signing.key（0600，32 字节 base64url）。 */
+async function loadSigningKey(dshHome) {
+  const file = join(dshHome, SIGNING_KEY_NAME);
+  try {
+    const raw = (await readFile(file, "utf8")).trim();
+    if (/^[A-Za-z0-9_-]{43}$/.test(raw)) return raw;
+  } catch (e) {
+    /* 首次启动或文件不可读：下面重建 */
+  }
+  const key = randomBytes(32).toString("base64url");
+  await writeFile(file, key + "\n", { mode: 0o600 });
+  return key;
+}
+
+/** 与 dsh-client-connection 的 encodeCookie 同格式：v1.<body>.<hmac>。 */
+function signTrustCookie(key, authority, issuedAt, expiresAt) {
+  const body = Buffer.from(JSON.stringify({ version: 1, authority, issuedAt, expiresAt }), "utf8").toString("base64url");
+  const sig = createHmac("sha256", Buffer.from(key, "base64url")).update(body).digest("base64url");
+  return "v1." + body + "." + sig;
+}
+
+/** 以 root 写回被补丁的本体文件（sudo → 特权容器），保留 .rgate-backup。 */
+async function writeRootFile(target, content, tag) {
+  const dir = target.slice(0, target.lastIndexOf("/"));
+  const base = target.slice(target.lastIndexOf("/") + 1);
+  const tmp = join(tmpdir(), tag + "-" + process.pid + "-" + Date.now() + ".js");
+  await writeFile(tmp, content, "utf8");
+  const q = (s) => "'" + String(s).split("'").join("'\\''") + "'";
+  try {
+    let wr = await runCmd(
+      "sudo -n sh -c " + q(
+        "[ -f " + q(target) + ".rgate-backup ] || cp -a " + q(target) + " " + q(target) + ".rgate-backup; " +
+        "cp " + q(tmp) + " " + q(target),
+      ),
+      60000,
+    );
+    if (wr.code !== 0) {
+      const inner = "[ -f /target/" + base + ".rgate-backup ] || cp -a /target/" + base +
+        " /target/" + base + ".rgate-backup; cat > /target/" + base;
+      wr = await runCmd(
+        "cat " + q(tmp) + " | docker run --rm -i -v " + q(dir + ":/target") +
+          " alpine:3.20 sh -c " + q(inner),
+        60000,
+      );
+    }
+    if (wr.code !== 0) return { ok: false, reason: (wr.stderr || "sudo 与容器写入均失败").slice(0, 220) };
+    return { ok: true };
+  } finally {
+    await rm(tmp, { force: true }).catch(() => {});
+  }
+}
+
+async function reapplyDshTrustPatch() {
+  try {
+    const src = await readFile(DSH_CONNECTION_FILE, "utf8");
+    if (src.includes(DSH_TRUST_MARK)) return { applied: false, reason: "not-needed" };
+    let out = src;
+    const authHit = out.includes(DSH_AUTH_FROM);
+    const indexHit = out.includes(DSH_INDEX_FROM);
+    if (!authHit && !indexHit) {
+      return { applied: false, reason: "锚点未匹配（官方 connection 可能已改版）：" + DSH_CONNECTION_FILE };
+    }
+    if (authHit) out = out.replace(DSH_AUTH_FROM, DSH_AUTH_TO);
+    if (indexHit) out = out.replace(DSH_INDEX_FROM, DSH_INDEX_TO);
+    const wr = await writeRootFile(DSH_CONNECTION_FILE, out, "rgate-connection-patch");
+    if (!wr.ok) return { applied: false, reason: wr.reason };
+    return { applied: true, auth: authHit, index: indexHit };
   } catch (e) {
     return { applied: false, reason: String((e && e.message) || e) };
   }
@@ -264,6 +431,9 @@ const GATE_HEAD = `<style id="rgate-gate-style">#root{visibility:hidden!importan
 })();
 </script>`;
 
+// 供运维/测试手动触发（启动时也会自动幂等执行）。
+export { reapplyDshTrustPatch };
+
 export function apply(ctx) {
   const webServer = ctx.webServer;
   if (webServer === undefined) {
@@ -287,6 +457,8 @@ export function apply(ctx) {
     sessions: new Map(),
     loginFails: new Map(),
     passwordWrite: Promise.resolve(),
+    signingKey: null,
+    signingKeyReady: Promise.resolve(),
   };
 
   const safeEqual = (a, b) => {
@@ -399,6 +571,17 @@ export function apply(ctx) {
     const xff = req.headers["x-forwarded-for"];
     if (typeof xff === "string" && xff.trim() !== "") return "xff:" + xff.split(",")[0].trim();
     return "ip:" + String((req.socket && req.socket.remoteAddress) || "unknown");
+  };
+
+  // 与 dsh-client-connection 的 requestAuthority 同口径：Host 规范化后的 host[:port]。
+  const authorityOf = (req) => {
+    const host = String(req.headers.host || "").trim();
+    if (host === "") return null;
+    try {
+      return new URL("http://" + host).host;
+    } catch (e) {
+      return null;
+    }
   };
 
   // Origin 与 Host 一致性（浏览器跨站 POST 会带攻击者 Origin；非浏览器无 Origin 放行）
@@ -533,12 +716,29 @@ export function apply(ctx) {
     if (password !== "" && verify(password)) {
       state.loginFails.delete(key);
       const token = randomBytes(32).toString("base64url");
-      state.sessions.set(token, Date.now() + SESSION_TTL_MS);
+      const issuedAt = Date.now();
+      const expiresAt = issuedAt + SESSION_TTL_MS;
+      const maxAge = Math.floor(SESSION_TTL_MS / 1000);
+      state.sessions.set(token, expiresAt);
+      const cookies = [`${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}`];
+      // 同步签发 DSH 能独立验证的信任 cookie：登录后访问不再需要 ?token= 地址。
+      try {
+        await state.signingKeyReady;
+        const authority = authorityOf(req);
+        if (state.signingKey !== null && authority !== null) {
+          cookies.push(
+            `${DSH_TRUST_COOKIE}=${signTrustCookie(state.signingKey, authority, issuedAt, expiresAt)}` +
+            `; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}`,
+          );
+        }
+      } catch (e) {
+        console.error("[rgate] 信任 cookie 签发失败：" + String((e && e.message) || e));
+      }
       console.log("[rgate] 登录成功：" + key);
       res.writeHead(200, {
         "content-type": "application/json",
         "cache-control": "no-store",
-        "set-cookie": `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
+        "set-cookie": cookies,
       });
       res.end(JSON.stringify({ ok: true }));
       return;
@@ -561,7 +761,10 @@ export function apply(ctx) {
     res.writeHead(200, {
       "content-type": "application/json",
       "cache-control": "no-store",
-      "set-cookie": `${COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
+      "set-cookie": [
+        `${COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
+        `${DSH_TRUST_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
+      ],
     });
     res.end(JSON.stringify({ ok: true }));
   };
@@ -648,7 +851,10 @@ export function apply(ctx) {
       res.writeHead(200, {
         "content-type": "application/json",
         "cache-control": "no-store",
-        "set-cookie": `${COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
+        "set-cookie": [
+          `${COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
+          `${DSH_TRUST_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
+        ],
       });
       res.end(JSON.stringify({ ok: true }));
     } else {
@@ -677,6 +883,15 @@ export function apply(ctx) {
   // 2) index.html 注入 UI 门禁脚本
   ctx.effect(() => webServer.tapIndex((html) => String(html).replace(/<head[^>]*>/i, (m) => m + GATE_HEAD)), "rgate: index gate");
 
+  // 签名密钥：登录时用于签发 DSH 能独立验证的信任 cookie。
+  state.signingKeyReady = loadSigningKey(DSH_HOME).then((k) => {
+    state.signingKey = k;
+    return k;
+  }).catch((e) => {
+    console.error("[rgate] 签名密钥加载失败：" + String((e && e.message) || e));
+    return null;
+  });
+
   ensureLoaded().catch((e) => console.error("[rgate] 启动加载失败：" + String((e && e.message) || e)));
   // 远程设置补丁：每次启动幂等检查（覆盖手动升级与自动升级两条路径）。
   reapplyRemoteSettingsPatch().then((r) => {
@@ -684,5 +899,11 @@ export function apply(ctx) {
     else if (r.reason === "not-needed") console.log("[rgate] 远程设置补丁：已在位，无需重打");
     else console.error("[rgate] 远程设置补丁未应用: " + r.reason);
   }).catch((e) => console.error("[rgate] 远程设置补丁异常: " + String((e && e.message) || e)));
-  console.log("[rgate] 门禁已启用：登录墙 /rgate-login + index.html UI 门禁 + remote-auth 端点（/api RPC 面由 dsh 自身鉴权）");
+  // 本体信任补丁：index 放行 + 接受 rgate_auth，去掉 ?token= 的访问前提。
+  reapplyDshTrustPatch().then((r) => {
+    if (r.applied) console.log("[rgate] 本体信任补丁：已应用（index 放行 + rgate_auth 视为已认证）auth=" + r.auth + " index=" + r.index);
+    else if (r.reason === "not-needed") console.log("[rgate] 本体信任补丁：已在位，无需重打");
+    else console.error("[rgate] 本体信任补丁未应用: " + r.reason);
+  }).catch((e) => console.error("[rgate] 本体信任补丁异常: " + String((e && e.message) || e)));
+  console.log("[rgate] 门禁已启用：登录墙 /rgate-login + index.html UI 门禁 + remote-auth 端点 + DSH 信任 cookie（无需 ?token=）");
 }
