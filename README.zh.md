@@ -98,4 +98,4 @@ MIT
 
 ## 设置面说明
 
-Harness 0.1.2-rc.2+ 将设置面（模型提供方、凭据、预设编写）限制为仅限本机页面，等待真实认证层。rgate 正是这层认证：每次启动会幂等地重打一行客户端补丁，让**已登录**的远程浏览器正常使用设置；未登录访客仍被登录墙拦截。锚点表达式（`@deepseek-ai/dsh-client-ui-settings/lib/client.js` 中的 `ctx.remote.$host.isLoopback ? "host" : "memory"`）已在 Harness 0.1.5-alpha.1 上重新核实。原文件会在目标旁自动备份（`client.js.rgate-backup`），Harness 每次升级后补丁自动重打。
+Harness 0.1.2-rc.2+ 将设置面（模型提供方、凭据、预设编写）限制为仅限本机页面，等待真实认证层。rgate 正是这层认证：每次启动会幂等地重打一行客户端补丁，让**已登录**的远程浏览器正常使用设置；未登录访客仍被登录墙拦截。锚点表达式（`@deepseek-ai/dsh-client-ui-settings/lib/client.js` 中的 `ctx.remote.$host.isLoopback ? "host" : "memory"`）已在 Harness 0.1.5-rc.2 上重新核实。原文件会在目标旁自动备份（`client.js.rgate-backup`），Harness 每次升级后补丁自动重打。

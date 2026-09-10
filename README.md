@@ -105,6 +105,6 @@ that lets **logged-in** remote browsers use settings normally; anonymous
 visitors remain blocked by the wall. The anchor expression
 (`ctx.remote.$host.isLoopback ? "host" : "memory"` in
 `@deepseek-ai/dsh-client-ui-settings/lib/client.js`) was re-verified against
-Harness 0.1.5-alpha.1. The original file is backed up next to the target
+Harness 0.1.5-rc.2. The original file is backed up next to the target
 (`client.js.rgate-backup`) and the patch reapplies automatically after each
 Harness upgrade.
